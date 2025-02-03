@@ -1640,6 +1640,7 @@ class Game(Jsonable):
                 state['builds'][power.name]['homes'] = build_sites
 
         # Returning state
+        state["phase"] = self.get_current_phase()
         return state
 
     def set_state(self, state, clear_history=True):
