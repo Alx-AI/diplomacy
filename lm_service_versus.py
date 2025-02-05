@@ -126,7 +126,6 @@ PARSABLE OUTPUT:{
             logger.error(f"[{self.model_name}] LLM error for {power_name}: {e}")
             return self.fallback_orders(possible_orders)
 
-
     def _extract_moves(self, raw_response: str, power_name: str) -> Optional[List[str]]:
         """
         Attempt multiple parse strategies to find JSON array of moves.
@@ -190,7 +189,6 @@ PARSABLE OUTPUT:{
         # If all attempts failed
         return None
 
-
     def _validate_orders(self, moves: List[str], possible_orders: Dict[str, List[str]]) -> List[str]:
         """
         Filter out invalid moves, fill missing with HOLD, else fallback.
@@ -238,6 +236,12 @@ PARSABLE OUTPUT:{
                 fallback.append(holds[0] if holds else orders_list[0])
         return fallback
 
+    def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
+        """
+        Generates a single message for the given power, given the entire conversation so far.
+        By default, returns an empty string. Subclasses override for each LLM.
+        """
+        raise NotImplementedError("Subclasses must implement get_conversation_reply().")
 
 ##############################################################################
 # 2) Concrete Implementations
@@ -259,15 +263,64 @@ class OpenAIClient(BaseModelClient):
         You are given a board state and a list of possible orders for a power.
         You need to produce the final orders for that power.
         """
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-        )
-        return response.choices[0].message.content.strip()
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+            )
+            if not response or not hasattr(response, "choices") or not response.choices:
+                logger.warning(f"[{self.model_name}] Empty or invalid result in generate_response. Returning empty.")
+                return ""
+            return response.choices[0].message.content.strip()
+        except json.JSONDecodeError as json_err:
+            logger.error(f"[{self.model_name}] JSON decoding failed in generate_response: {json_err}")
+            return ""
+        except Exception as e:
+            logger.error(f"[{self.model_name}] Unexpected error in generate_response: {e}")
+            return ""
 
+    def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
+        """
+        Produces a single message from the LLM in plain text form, with robust error handling.
+        """
+        import json
+        from json.decoder import JSONDecodeError
+
+        system_prompt = f"""
+        You are playing as {power_name} in a Diplomacy negotiation during phase {game_phase}.
+        You have read all messages so far. Now produce a single new message with your strategy or statement.
+        IMPORTANT: Output only the text of your message, with no additional formatting or disclaimers.
+        """
+        conversation_prompt = f"Conversation so far:\n{conversation_so_far}\n\nYour new message:"
+
+        try:
+            # Perform the request
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": conversation_prompt}
+                ],
+                max_completion_tokens=2000
+            )
+
+            # If there's no valid response or choices, return empty
+            if not response or not hasattr(response, "choices") or not response.choices:
+                logger.warning(f"[{self.model_name}] Empty or invalid response for {power_name}. Returning empty.")
+                return ""
+
+            # Attempt to parse the content (OpenAI library usually does this, but we add a safety net)
+            return response.choices[0].message.content.strip()
+
+        except JSONDecodeError as json_err:
+            logger.error(f"[{self.model_name}] JSON decoding failed for {power_name}: {json_err}")
+            return ""  # Fallback
+        except Exception as e:
+            logger.error(f"[{self.model_name}] Unexpected error for {power_name}: {e}")
+            return ""
 
 class ClaudeClient(BaseModelClient):
     """
@@ -286,16 +339,49 @@ class ClaudeClient(BaseModelClient):
         You need to produce the final orders for that power.
         """
         # Updated Claude messages format
-        response = self.client.messages.create(
-            model=self.model_name,
-            max_tokens=2000,
-            system=system_prompt,  # system is now a top-level parameter
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response.content[0].text if response.content else ""
+        try:
+            response = self.client.messages.create(
+                model=self.model_name,
+                max_tokens=2000,
+                system=system_prompt,  # system is now a top-level parameter
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            if not response.content:
+                logger.warning(f"[{self.model_name}] Empty content in Claude generate_response. Returning empty.")
+                return ""
+            return response.content[0].text.strip() if response.content else ""
+        except json.JSONDecodeError as json_err:
+            logger.error(f"[{self.model_name}] JSON decoding failed in generate_response: {json_err}")
+            return ""
+        except Exception as e:
+            logger.error(f"[{self.model_name}] Unexpected error in generate_response: {e}")
+            return ""
 
+    def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
+        system_prompt = f"You are playing as {power_name} in this Diplomacy negotiation phase {game_phase}."
+        user_prompt = (
+            f"Conversation so far:\n{conversation_so_far}\n"
+            "Please provide a single, short message in plain text. "
+        )
+        try:
+            response = self.client.messages.create(
+                model=self.model_name,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_tokens=2000
+            )
+            if not response.content:
+                logger.warning(f"[{self.model_name}] No content in Claude conversation. Returning empty.")
+                return ""
+            return response.content[0].text.strip()
+        except json.JSONDecodeError as json_err:
+            logger.error(f"[{self.model_name}] JSON decoding failed in conversation: {json_err}")
+            return ""
+        except Exception as e:
+            logger.error(f"[{self.model_name}] Unexpected error in conversation: {e}")
+            return ""
 
 class GeminiClient(BaseModelClient):
     """
@@ -304,29 +390,59 @@ class GeminiClient(BaseModelClient):
     def __init__(self, model_name: str):
         super().__init__(model_name)
         genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-        # Updated config without system_instruction
         self.generation_config = {
             "temperature": 0.7,
             "max_output_tokens": 2000,
         }
 
     def generate_response(self, prompt: str) -> str:
-        # Add system prompt to the actual prompt for Gemini
         system_prompt = """
         You are a Diplomacy expert.
         You are given a board state and a list of possible orders for a power.
         You need to produce the final orders for that power.
-
-        """  # Extra newline for separation
+        """
         full_prompt = system_prompt + prompt
         
-        model = genai.GenerativeModel(
-            self.model_name,
-            generation_config=self.generation_config
-        )
-        response = model.generate_content(full_prompt)
-        return response.text.strip() if response and response.text else ""
+        try:
+            model = genai.GenerativeModel(
+                self.model_name,
+                generation_config=self.generation_config
+            )
+            response = model.generate_content(full_prompt)
+            if not response or not response.text:
+                logger.warning(f"[{self.model_name}] Empty Gemini generate_response. Returning empty.")
+                return ""
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"[{self.model_name}] Error in Gemini generate_response: {e}")
+            return ""
 
+    def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
+        """
+        Produce a single short conversation message from the Gemini model, 
+        given existing conversation context.
+        """
+        # Similar approach: create a system plus user prompt, then call model.generate_content
+        system_prompt = f"You are playing as {power_name} in this Diplomacy negotiation phase {game_phase}.\n"
+        user_prompt = (
+            f"Conversation so far:\n{conversation_so_far}\n"
+            "Please provide a single, short message in plain text. "
+        )
+        full_prompt = system_prompt + user_prompt
+
+        try:
+            model = genai.GenerativeModel(
+                self.model_name,
+                generation_config=self.generation_config
+            )
+            response = model.generate_content(full_prompt)
+            if not response or not response.text:
+                logger.warning(f"[{self.model_name}] Empty Gemini conversation response. Returning empty.")
+                return ""
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"[{self.model_name}] Error in Gemini get_conversation_reply: {e}")
+            return ""
 
 class DeepSeekClient(BaseModelClient):
     """
@@ -347,18 +463,49 @@ class DeepSeekClient(BaseModelClient):
         You are given a board state and a list of possible orders for a power.
         You need to produce the final orders for that power.
         """
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            stream=False
-        )
-        if not response or not response.choices:
-            logger.warning("[DeepSeek] No valid response.")
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                stream=False
+            )
+            if not response or not response.choices:
+                logger.warning("[DeepSeek] No valid response in generate_response.")
+                return ""
+            return response.choices[0].message.content.strip()
+        
+        except json.JSONDecodeError as json_err:
+            logger.error(f"[DeepSeek] JSON decode error in generate_response: {json_err}")
             return ""
-        return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"[DeepSeek] Unexpected error in generate_response: {e}")
+            return ""
+    
+    def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
+        system_prompt = f"You are playing as {power_name} in this Diplomacy negotiation phase {game_phase}."
+        user_prompt = (
+            f"Conversation so far:\n{conversation_so_far}\n"
+            "Please provide a single, short message in plain text. "
+        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": user_prompt}],
+                max_completion_tokens=2000
+            )
+            if not response or not response.choices:
+                logger.warning("[DeepSeek] No valid choices in conversation reply.")
+                return ""
+            return response.choices[0].message.content.strip()
+        except json.JSONDecodeError as json_err:
+            logger.error(f"[DeepSeek] JSON decode error in conversation: {json_err}")
+            return ""
+        except Exception as e:
+            logger.error(f"[DeepSeek] Unexpected error in conversation: {e}")
+            return ""  
 
 
 ##############################################################################
@@ -394,11 +541,12 @@ def assign_models_to_powers():
     Return a dict: { power_name: model_id, ... }
     POWERS = ['AUSTRIA', 'ENGLAND', 'FRANCE', 'GERMANY', 'ITALY', 'RUSSIA', 'TURKEY']
     """
+    # "RUSSIA": "deepseek-reasoner",
     return {
         "FRANCE": "o3-mini",
         "GERMANY": "claude-3-5-sonnet-20241022",
         "ENGLAND": "gemini-1.5-flash",
-        "RUSSIA": "deepseek-reasoner",
+        "RUSSIA": "o3-mini",
         "ITALY": "gpt-4o",
         "AUSTRIA": "gpt-4o-mini",
         "TURKEY": "claude-3-5-haiku-20241022",

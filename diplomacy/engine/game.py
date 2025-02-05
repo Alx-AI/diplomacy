@@ -224,7 +224,7 @@ class Game(Jsonable):
                  'convoy_paths_dest', 'zobrist_hash', 'renderer', 'game_id', 'map_name', 'role', 'rules',
                  'message_history', 'state_history', 'result_history', 'status', 'timestamp_created', 'n_controls',
                  'deadline', 'registration_password', 'observer_level', 'controlled_powers', '_phase_wrapper_type',
-                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state']
+                 'phase_abbr', '_unit_owner_cache', 'daide_port', 'fixed_state', 'power_model_map', 'conversations']
     zobrist_tables = {}
     rule_cache = ()
     model = {
@@ -293,6 +293,8 @@ class Game(Jsonable):
         self.controlled_powers = None
         self.daide_port = None
         self.fixed_state = None
+        self.power_model_map = {}
+        self.conversations = {}
 
         # Caches
         self._unit_owner_cache = None               # {(unit, coast_required): owner}
