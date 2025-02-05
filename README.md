@@ -1,6 +1,14 @@
 # Diplomacy: DATC-Compliant Game Engine [![Build Status](https://travis-ci.org/diplomacy/diplomacy.svg?branch=master)](https://travis-ci.org/diplomacy/diplomacy) [![Documentation Status](https://readthedocs.org/projects/diplomacy/badge/?version=latest)](https://diplomacy.readthedocs.io/en/latest/?badge=latest)
 
-This project contains an open-source DATC-compliant Diplomacy game engine, a client-server architecture for network play, a web interface to play against bots and to visualize games, and a DAIDE-compatible adapter to connect DAIDE bots to the server.
+## Experimental AI for Diplomacy
+I'm currently experimenting with an AI that can play Diplomacy. For this purpose, I've introduced:
+- **lm_game.py** for orchestrating AI-driven gameplay loops
+- **lm_service_versus.py** for bridging multiple language model services (e.g. GPT, Claude, etc.)
+- A suite of AI tests to verify functionality and basic adjudication scenarios
+- A small modification to the main `game.py` in order to integrate level-of-detail AI logic
+
+This work aims to explore how large language models can handle Diplomacy's negotiation and strategic elements. 
+The new files plug into the existing Diplomacy game engine, calling AI inference to decide orders for each power.
 
 <p align="center">
   <img width="500" src="docs/images/map_overview.png" alt="Diplomacy Map Overview">
