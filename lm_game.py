@@ -95,7 +95,7 @@ def main():
     # Assign models to powers and store in the game object so we can reference it anywhere
     game.power_model_map = assign_models_to_powers()
 
-    max_year = 1905
+    max_year = 2000
 
     while not game.is_game_done:
         phase_start = time.time()

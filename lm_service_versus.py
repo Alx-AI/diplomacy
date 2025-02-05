@@ -546,7 +546,7 @@ def assign_models_to_powers():
         "FRANCE": "o3-mini",
         "GERMANY": "claude-3-5-sonnet-20241022",
         "ENGLAND": "gemini-1.5-flash",
-        "RUSSIA": "o3-mini",
+        "RUSSIA": "deepseek-reasoner",
         "ITALY": "gpt-4o",
         "AUSTRIA": "gpt-4o-mini",
         "TURKEY": "claude-3-5-haiku-20241022",
