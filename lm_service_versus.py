@@ -2,15 +2,18 @@ import os
 import json
 import re
 import logging
+import ast
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
 # Anthropics
 import anthropic
 
 # Google Generative AI
-import google.generativeai as genai
+# Suppress Gemini/PaLM gRPC warnings
+os.environ['GRPC_PYTHON_LOG_LEVEL'] = '40'  # ERROR level only
+import google.generativeai as genai  # Import after setting log level
 
 # DeepSeek
 from openai import OpenAI as DeepSeekOpenAI
@@ -95,63 +98,98 @@ PARSABLE OUTPUT:{
         )
         return prompt
 
-    def get_orders(self, board_state, power_name, possible_orders) -> List[str]:
+    def get_orders(self, board_state, power_name: str, possible_orders: Dict[str, List[str]]) -> List[str]:
         """
-        High-level method:
-         1) build_prompt
-         2) call generate_response
-         3) parse the "PARSABLE OUTPUT" JSON
-         4) validate moves
-         5) fallback if needed
+        1) Builds the prompt.
+        2) Calls LLM (generate_response).
+        3) Tries to parse the "PARSABLE OUTPUT: { ... }" JSON.
+        4) Fills missing or invalid with fallback.
         """
-        # Build prompt
         prompt = self.build_prompt(board_state, power_name, possible_orders)
-        # Query model
+        raw_response = ""
+
         try:
-            content = self.generate_response(prompt)
-            logger.info(f"[{self.model_name}] Raw LLM response for {power_name}:\n{content}")
+            raw_response = self.generate_response(prompt)
+            logger.info(f"[{self.model_name}] Raw LLM response for {power_name}:\n{raw_response}")
 
-            # Attempt direct JSON parse
-            block_match = re.search(
-                r'PARSABLE\s*OUTPUT:\s*\{\s*(.*?)\s*\}',
-                content, flags=re.DOTALL
-            )
-            if block_match:
-                snippet = block_match.group(1)
-                snippet = snippet.replace("'", '"').replace("'", '"')
-                snippet = snippet.replace("\"", '"').replace("\"", '"')
-                try:
-                    data = json.loads("{" + snippet + "}")
-                    moves = data["orders"]
-                    return self._validate_orders(moves, possible_orders)
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.warning(f"{self.model_name} JSON parse failed for {power_name}: {e}")
+            # Attempt to parse the final "orders" from the LLM
+            move_list = self._extract_moves(raw_response, power_name)
+            if not move_list:
+                logger.warning(f"[{self.model_name}] Could not extract moves for {power_name}. Using fallback.")
+                return self.fallback_orders(possible_orders)
 
-            # If direct parse fails, fallback to bracket-based
-            bracket_match = re.search(r'(\[[^]]*\])', content)
-            if bracket_match:
-                possible_list_str = bracket_match.group(1)
-                possible_list_str = (
-                    possible_list_str
-                    .replace("'", '"')
-                    .replace("'", '"')
-                    .replace("\"", '"')
-                    .replace("\"", '"')
-                )
-                try:
-                    # Danger in production; safe for demonstration
-                    moves = eval(possible_list_str)
-                    if isinstance(moves, list):
-                        return self._validate_orders(moves, possible_orders)
-                except Exception as e:
-                    logger.warning(f"{self.model_name} bracket parse failed for {power_name}: {e}")
+            # Validate or fallback
+            validated_moves = self._validate_orders(move_list, possible_orders)
+            return validated_moves
 
-            logger.warning(f"[{self.model_name}] Unable to parse response for {power_name}. Using fallback.")
+        except Exception as e:
+            logger.error(f"[{self.model_name}] LLM error for {power_name}: {e}")
             return self.fallback_orders(possible_orders)
 
-        except Exception as exc:
-            logger.error(f"[{self.model_name}] LLM error for {power_name}: {exc}")
-            return self.fallback_orders(possible_orders)
+
+    def _extract_moves(self, raw_response: str, power_name: str) -> Optional[List[str]]:
+        """
+        Attempt multiple parse strategies to find JSON array of moves.
+        
+        1. Regex for PARSABLE OUTPUT lines.
+        2. If that fails, also look for fenced code blocks with { ... }.
+        3. Attempt bracket-based fallback if needed.
+        
+        Returns a list of move strings or None if everything fails.
+        """
+        # 1) Regex for "PARSABLE OUTPUT:{...}"
+        pattern = r"PARSABLE OUTPUT\s*:\s*\{(.*?)\}\s*$"
+        matches = re.search(pattern, raw_response, re.DOTALL)
+        if not matches:
+            # Some LLMs might not put the colon or might have triple backtick fences.
+            logger.debug(f"[{self.model_name}] Regex parse #1 failed for {power_name}. Trying alternative patterns.")
+            
+            # 1b) Check for inline JSON after "PARSABLE OUTPUT"
+            pattern_alt = r"PARSABLE OUTPUT\s*\{(.*?)\}\s*$"
+            matches = re.search(pattern_alt, raw_response, re.DOTALL)
+
+        # 2) If still no match, check for triple-backtick code fences containing JSON
+        if not matches:
+            code_fence_pattern = r"```json\s*\{(.*?)\}\s*```"
+            matches = re.search(code_fence_pattern, raw_response, re.DOTALL)
+            if matches:
+                logger.debug(f"[{self.model_name}] Found triple-backtick JSON block for {power_name}.")
+        
+        # 3) Attempt to parse JSON if we found anything
+        json_text = None
+        if matches:
+            # Add braces back around the captured group
+            json_text = "{%s}" % matches.group(1).strip()
+            json_text = json_text.strip()
+
+        if not json_text:
+            logger.debug(f"[{self.model_name}] No JSON text found in LLM response for {power_name}.")
+            return None
+
+        # 3a) Try JSON loading
+        try:
+            data = json.loads(json_text)
+            return data.get("orders", None)
+        except json.JSONDecodeError as e:
+            logger.warning(f"[{self.model_name}] JSON decode failed for {power_name}: {e}. Trying bracket fallback.")
+
+        # 3b) Attempt bracket fallback: we look for the substring after "orders"
+        #     E.g. "orders: ['A BUD H']" and parse it. This is risky but can help with minor JSON format errors.
+        #     We only do this if we see something like "orders": ...
+        bracket_pattern = r'["\']orders["\']\s*:\s*\[([^\]]*)\]'
+        bracket_match = re.search(bracket_pattern, json_text, re.DOTALL)
+        if bracket_match:
+            try:
+                raw_list_str = "[" + bracket_match.group(1).strip() + "]"
+                moves = ast.literal_eval(raw_list_str)
+                if isinstance(moves, list):
+                    return moves
+            except Exception as e2:
+                logger.warning(f"[{self.model_name}] Bracket fallback parse also failed for {power_name}: {e2}")
+
+        # If all attempts failed
+        return None
+
 
     def _validate_orders(self, moves: List[str], possible_orders: Dict[str, List[str]]) -> List[str]:
         """
@@ -233,7 +271,7 @@ class OpenAIClient(BaseModelClient):
 
 class ClaudeClient(BaseModelClient):
     """
-    For 'claude-2', 'claude-3-5-sonnet-20241022', etc.
+    For 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', etc.
     """
     def __init__(self, model_name: str):
         super().__init__(model_name)
@@ -292,7 +330,7 @@ class GeminiClient(BaseModelClient):
 
 class DeepSeekClient(BaseModelClient):
     """
-    For a hypothetical 'deepseek-reasoner' model (via OpenAI-like interface).
+    For DeepSeek R1 'deepseek-reasoner'
     """
     def __init__(self, model_name: str):
         super().__init__(model_name)
