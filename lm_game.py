@@ -101,7 +101,7 @@ def main():
     # Map each power to its chosen LLM
     game.power_model_map = assign_models_to_powers()
 
-    max_year = 1905
+    max_year = 1902
 
     while not game.is_game_done:
         phase_start = time.time()
@@ -162,7 +162,13 @@ def main():
 
     duration = time.time() - start_whole
     logger.info(f"Game ended after {duration:.2f}s. Saving to 'lmvsgame.json'.")
-    to_saved_game_format(game, output_path='lmvsgame.json')
-
+    # Save the game to a JSON file
+    output_path = 'lmvsgame.json'
+    if not os.path.exists(output_path):
+        to_saved_game_format(game, output_path=output_path)
+    else:
+        logger.info("Game file already exists, saving with unique filename.")
+        output_path = f'{output_path}_{time.strftime("%Y%m%d_%H%M%S")}.json'
+        to_saved_game_format(game, output_path=output_path)
 if __name__ == "__main__":
     main()
