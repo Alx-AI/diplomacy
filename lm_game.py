@@ -2,6 +2,8 @@ import logging
 import time
 import dotenv
 import os
+import re
+import json
 
 # Suppress Gemini/PaLM gRPC warnings
 os.environ['GRPC_PYTHON_LOG_LEVEL'] = '40'  # ERROR level only
@@ -42,15 +44,12 @@ def gather_possible_orders(game, power_name):
 def conduct_negotiations(game, max_rounds=3):
     """
     Conducts a round-robin conversation among all non-eliminated powers.
-    Each power can send up to 'max_rounds' messages, one at a time.
-    Instead of storing them in 'conversations', we create a
-    diplomacy.engine.message.Message for each new LLM response and add it
-    to game.messages (which will later be archived to message_history).
+    Each power can send up to 'max_rounds' messages, choosing between private
+    and global messages each turn.
     """
     logger.info("Starting negotiation phase.")
 
     # Conversation messages are kept in a local list ONLY to build conversation_so_far text.
-    # We no longer store them in 'game.conversations'.
     conversation_messages = []
 
     active_powers = [
@@ -60,36 +59,85 @@ def conduct_negotiations(game, max_rounds=3):
     # We do up to 'max_rounds' single-message turns for each power
     for round_index in range(max_rounds):
         for power_name in active_powers:
-            # Build the conversation context from all messages so far
-            conversation_so_far = "\n".join(
-                f"{msg['sender']}: {msg['content']}" for msg in conversation_messages
-            )
+            # Build the conversation context from all messages the power can see
+            visible_messages = []
+            for msg in conversation_messages:
+                # Include if message is global or if power is sender/recipient
+                if msg['recipient'] == GLOBAL or msg['sender'] == power_name or msg['recipient'] == power_name:
+                    visible_messages.append(
+                        f"{msg['sender']} to {msg['recipient']}: {msg['content']}"
+                    )
+            
+            conversation_so_far = "\n".join(visible_messages)
+
+            # Add few-shot example for message format
+            few_shot_example = """
+Example response formats:
+1. For a global message:
+{
+    "message_type": "global",
+    "content": "I propose we all work together against Turkey."
+}
+
+2. For a private message:
+{
+    "message_type": "private",
+    "recipient": "FRANCE",
+    "content": "Let's form a secret alliance against Germany."
+}
+"""
 
             # Ask the LLM for a single reply
             client = load_model_client(game.power_model_map.get(power_name, "o3-mini"))
             new_message = client.get_conversation_reply(
                 power_name=power_name,
-                conversation_so_far=conversation_so_far,
+                conversation_so_far=conversation_so_far + "\n" + few_shot_example,
                 game_phase=game.current_short_phase
             )
 
             if new_message:
-                # We log for debugging
-                logger.info(f"Power {power_name} says:\n{new_message}")
-                # Keep local record only for building future conversation context
-                conversation_messages.append({
-                    "sender": power_name,
-                    "content": new_message.strip()
-                })
+                try:
+                    # Parse the JSON response
+                    # Find the JSON block between curly braces
+                    json_match = re.search(r'\{[^}]+\}', new_message)
+                    if json_match:
+                        message_data = json.loads(json_match.group(0))
+                        
+                        # Extract message details
+                        message_type = message_data.get('message_type', 'global')
+                        content = message_data.get('content', '').strip()
+                        recipient = message_data.get('recipient', GLOBAL)
+                        
+                        # Validate recipient if private message
+                        if message_type == 'private' and recipient not in active_powers:
+                            logger.warning(f"Invalid recipient {recipient} for private message, defaulting to GLOBAL")
+                            recipient = GLOBAL
+                        
+                        # For private messages, ensure recipient is specified
+                        if message_type == 'private' and recipient == GLOBAL:
+                            logger.warning("Private message without recipient specified, defaulting to GLOBAL")
+                            
+                        # Log for debugging
+                        logger.info(f"Power {power_name} sends {message_type} message to {recipient}")
+                        
+                        # Keep local record for building future conversation context
+                        conversation_messages.append({
+                            "sender": power_name,
+                            "recipient": recipient,
+                            "content": content
+                        })
 
-                # Create an official public (global) message in the Diplomacy engine
-                diplo_message = Message(
-                    phase=game.current_short_phase,
-                    sender=power_name,
-                    recipient=GLOBAL,           # Everyone sees it
-                    message=new_message.strip() # The LLM's content
-                )
-                game.add_message(diplo_message)
+                        # Create an official message in the Diplomacy engine
+                        diplo_message = Message(
+                            phase=game.current_short_phase,
+                            sender=power_name,
+                            recipient=recipient,
+                            message=content
+                        )
+                        game.add_message(diplo_message)
+                except (json.JSONDecodeError, AttributeError) as e:
+                    logger.error(f"Failed to parse message from {power_name}: {e}")
+                    continue
 
 def main():
     logger.info("Starting a new Diplomacy game for testing with multiple LLMs, now concurrent!")

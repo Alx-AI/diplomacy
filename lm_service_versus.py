@@ -238,10 +238,37 @@ PARSABLE OUTPUT:{
 
     def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
         """
-        Generates a single message for the given power, given the entire conversation so far.
-        By default, returns an empty string. Subclasses override for each LLM.
+        Produce a single message (either private or global) from the model,
+        given existing conversation context.
         """
-        raise NotImplementedError("Subclasses must implement get_conversation_reply().")
+        prompt = f"""You are {power_name} in a Diplomacy game, currently in phase {game_phase}.
+You can send either a global message (visible to all powers) or a private message (visible only to a specific power).
+
+Previous messages:
+{conversation_so_far}
+
+Instructions:
+1. Decide whether to send a global message or a private message to a specific power.
+2. Your response must be in valid JSON format as shown in the examples.
+3. For private messages, choose your recipient carefully based on strategic value.
+4. Keep messages concise and diplomatic.
+
+Example response formats:
+1. For a global message:
+{{
+    "message_type": "global",
+    "content": "I propose we all work together against Turkey."
+}}
+
+2. For a private message:
+{{
+    "message_type": "private",
+    "recipient": "FRANCE",
+    "content": "Let's form a secret alliance against Germany."
+}}
+
+Think strategically about your diplomatic position and respond with your message in the correct JSON format:"""
+        return self.generate_response(prompt)
 
 ##############################################################################
 # 2) Concrete Implementations
