@@ -11,21 +11,19 @@ from dotenv import load_dotenv
 import anthropic
 
 # Google Generative AI
-# Suppress Gemini/PaLM gRPC warnings
-os.environ['GRPC_PYTHON_LOG_LEVEL'] = '40'  # ERROR level only
+# Set gemini to more verbose
+os.environ['GRPC_PYTHON_LOG_LEVEL'] = '10' 
 import google.generativeai as genai  # Import after setting log level
 
 # DeepSeek
 from openai import OpenAI as DeepSeekOpenAI
 
-# Set the logger level to DEBUG
-logging.getLogger().setLevel(logging.DEBUG)
-# Or if you have a specific logger:
-logging.getLogger('lm_service_versus').setLevel(logging.DEBUG)
+# set logger back to just info
+logger = logging.getLogger('lm_service_versus')
+logger.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO)
 
 load_dotenv()
-
-logger = logging.getLogger(__name__)
 
 ##############################################################################
 # 1) Base Interface
@@ -533,6 +531,8 @@ class GeminiClient(BaseModelClient):
             if not response or not response.text:
                 logger.warning(f"[{self.model_name}] Empty Gemini conversation response. Returning empty.")
                 return ""
+            else:
+                logger.info(f"[{self.model_name}] Gemini message succesfully generated.")
             return response.text.strip()
         except json.JSONDecodeError as json_err:
             logger.error(f"[{self.model_name}] JSON decode error in conversation: {json_err}")
@@ -554,7 +554,6 @@ class DeepSeekClient(BaseModelClient):
         )
 
     def generate_response(self, prompt: str) -> str:
-        # Similar to ChatCompletion
         system_prompt = self.system_prompt_response
         try:
             response = self.client.chat.completions.create(
@@ -565,34 +564,31 @@ class DeepSeekClient(BaseModelClient):
                 ],
                 stream=False
             )
+            logger.debug(f"[{self.model_name}] Raw DeepSeek response:\n{response}")
 
-            logger.debug(f"[{self.model_name}] Raw DeepSeek response: {response}")
-            
             if not response or not response.choices:
                 logger.warning(f"[{self.model_name}] No valid response in generate_response.")
                 return ""
 
             content = response.choices[0].message.content.strip()
-            
-            # Validate JSON format
+            if not content:
+                logger.warning(f"[{self.model_name}] DeepSeek returned empty content.")
+                return ""
+
             try:
                 json_response = json.loads(content)
                 required_fields = ["message_type", "content"]
                 if json_response["message_type"] == "private":
                     required_fields.append("recipient")
-                    
                 if not all(field in json_response for field in required_fields):
                     logger.error(f"[{self.model_name}] Missing required fields in response: {content}")
                     return ""
-                    
                 return content
-                
             except json.JSONDecodeError:
                 logger.error(f"[{self.model_name}] Response is not valid JSON: {content}")
-                # Attempt to fix common formatting issues
-                content = content.replace("'", '"')  # Replace single quotes with double quotes
+                content = content.replace("'", '"')
                 try:
-                    json.loads(content)  # Try parsing again
+                    json.loads(content)
                     return content
                 except:
                     return ""
@@ -604,14 +600,16 @@ class DeepSeekClient(BaseModelClient):
     def get_conversation_reply(self, power_name: str, conversation_so_far: str, game_phase: str) -> str:
         system_prompt = self.system_prompt_conversation.format(power_name=power_name, game_phase=game_phase)
         user_prompt = self.build_conversation_reply(power_name, conversation_so_far, game_phase)
+        user_prompt += "\n\nPlease provide ONLY a single JSON object as per the examples above."
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
                 max_completion_tokens=2000
             )
-            # Log the entire response object or at least the portion we think is JSON:
-            logger.debug(f"[{self.model_name}] Raw DeepSeek response: {response}")
+            logger.debug(f"[{self.model_name}] Raw DeepSeek conversation response:\n{response}")
+
             if not response or not response.choices:
                 logger.warning(f"[{self.model_name}] No valid choices in conversation reply.")
                 return ""
@@ -657,12 +655,12 @@ def assign_models_to_powers():
     Return a dict: { power_name: model_id, ... }
     POWERS = ['AUSTRIA', 'ENGLAND', 'FRANCE', 'GERMANY', 'ITALY', 'RUSSIA', 'TURKEY']
     """
-    # "RUSSIA": "deepseek-reasoner",
+    # "RUSSIA": "deepseek-reasoner", deepseek api having issues
     return {
         "FRANCE": "o3-mini",
         "GERMANY": "claude-3-5-sonnet-20241022",
         "ENGLAND": "gemini-2.0-flash",
-        "RUSSIA": "deepseek-reasoner",
+        "RUSSIA": "gemini-2.0-flash-lite-preview-02-05",
         "ITALY": "gpt-4o",
         "AUSTRIA": "gpt-4o-mini",
         "TURKEY": "claude-3-5-haiku-20241022",
