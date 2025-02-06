@@ -135,9 +135,13 @@ Example response formats:
                             message=content
                         )
                         game.add_message(diplo_message)
+
+
                 except (json.JSONDecodeError, AttributeError) as e:
                     logger.error(f"Failed to parse message from {power_name}: {e}")
                     continue
+    logger.info("Negotiation phase complete.")
+    return conversation_messages
 
 def main():
     logger.info("Starting a new Diplomacy game for testing with multiple LLMs, now concurrent!")
@@ -169,7 +173,7 @@ def main():
         # Use endswith("M") for movement phases (like F1901M, S1902M)
         if game.current_short_phase.endswith("M"):
             logger.info("Starting negotiation phase block...")
-            conduct_negotiations(game, max_rounds=3)
+            conversation_messages = conduct_negotiations(game, max_rounds=3)
 
         # Gather orders from each power concurrently
         active_powers = [
@@ -189,7 +193,7 @@ def main():
                     continue
                 board_state = game.get_state()
                 future = executor.submit(
-                    client.get_orders, board_state, power_name, possible_orders
+                    client.get_orders, board_state, power_name, possible_orders, conversation_messages
                 )
                 futures[future] = power_name
                 logger.debug(f"Submitted get_orders task for power {power_name}.")
