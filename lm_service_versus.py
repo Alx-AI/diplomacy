@@ -39,7 +39,7 @@ class BaseModelClient:
 
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self.system_prompt_messages = """
+        self.system_prompt_response = """
         You are a Diplomacy expert.
         You are given a board state and a list of possible orders for a power.
         You need to produce the final orders for that power.
@@ -109,7 +109,7 @@ class BaseModelClient:
         board_state, 
         power_name: str, 
         possible_orders: Dict[str, List[str]], 
-        conversation_text: str = ""
+        conversation_text: str,
     ) -> str:
         """
         Unified prompt approach: incorporate conversation and 'PARSABLE OUTPUT' requirements.
@@ -184,13 +184,19 @@ PARSABLE OUTPUT:{
         )
         return prompt
 
-    def get_orders(self, board_state, power_name: str, possible_orders: Dict[str, List[str]]) -> List[str]:
+    def get_orders(
+        self, 
+        board_state, 
+        power_name: str, 
+        possible_orders: Dict[str, List[str]], 
+        conversation_text: str,
+    ) -> List[str]:
         """
         1) Builds the prompt with conversation context if available
         2) Calls LLM
         3) Parses JSON block
         """
-        prompt = self.build_prompt(board_state, power_name, possible_orders, conversation_text="")
+        prompt = self.build_prompt(board_state, power_name, possible_orders, conversation_text)
 
         raw_response = ""
 
